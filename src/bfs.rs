@@ -37,9 +37,9 @@ impl<'m, T: CXCircuit> BFS<'m, T> {
 }
 
 /// Breadth-first search, starting from identity circuit.
-pub fn _bfs<T: CXCircuit>(moves: &ManyCircuits<T>, max_depth: usize) {
+pub fn _bfs<T: CXCircuit>(moves: &ManyCircuits<T>, max_steps: usize) {
     let mut bfs = BFS::new(T::new(), moves);
-    for _ in 1..=max_depth {
+    for _ in 1..=max_steps {
         bfs.step();
     }
 }
@@ -48,20 +48,20 @@ pub fn _bfs<T: CXCircuit>(moves: &ManyCircuits<T>, max_depth: usize) {
 pub fn mitm_bfs<T: CXCircuit>(
     target_circ: T,
     moves: &ManyCircuits<T>,
-    max_depth: usize,
+    max_steps: usize,
 ) -> Option<T> {
     // Start one BFS at the identity circuit
     let mut forward = BFS::new(T::new(), moves);
     // Start one BFS at the target circuit
     let mut backward = BFS::new(target_circ, moves);
-    for _ in 1..=max_depth {
+    for n_cx in 1..=max_steps {
         println!("forward:");
         forward.step();
         println!("backward:");
         backward.step();
         let intersection = forward.seen_circs.intersection(&backward.seen_circs);
         if !intersection.is_empty() {
-            println!("Success! returning early");
+            println!("Found solution using between {}-{} CXs", 2*n_cx - 1, 2*n_cx);
             return Some(*intersection[0]);
         }
     }
