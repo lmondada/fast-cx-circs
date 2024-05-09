@@ -1,11 +1,10 @@
 //! Circuits with only CX gates.
 
+use std::hash::Hash;
 use std::num::NonZeroU16;
 
-use delegate::delegate;
-
 /// A trait for a CX circuit with a fixed number of qubits.
-pub trait CXCircuit: Copy + Eq + Sized {
+pub trait CXCircuit: Copy + Eq + Sized + Hash {
     /// A new CX circuit.
     fn new() -> Self;
 
@@ -15,8 +14,6 @@ pub trait CXCircuit: Copy + Eq + Sized {
     /// Compose two CX circuits together.
     fn mult(&self, other: &Self) -> Self;
 
-    fn hash(&self) -> u32;
-
     /// Construct a CX circuit from a list of CX gates.
     fn from_cxs(cxs: impl IntoIterator<Item = (usize, usize)>) -> Self {
         let mut cx = Self::new();
@@ -24,57 +21,6 @@ pub trait CXCircuit: Copy + Eq + Sized {
             cx.cx(ctrl, tgt);
         }
         cx
-    }
-}
-
-/// A collection of CX circuits.
-///
-/// Just a wrapper around Vec.
-pub struct ManyCircuits<T> {
-    circuits: Vec<T>,
-}
-
-impl<T: CXCircuit> ManyCircuits<T>
-where
-    Self: Sized,
-{
-    /// Populate `self` with a single circuit.
-    pub fn singleton(circ: T) -> Self {
-        Self {
-            circuits: vec![circ],
-        }
-    }
-
-    pub fn new() -> Self {
-        Self {
-            circuits: Vec::new(),
-        }
-    }
-
-    /// Take outer product of all circuits in `self` with all circuits in `other`.
-    pub fn mult(&self, other: &ManyCircuits<T>) -> Self {
-        let circuits = self
-            .circuits
-            .iter()
-            .flat_map(|circuit| {
-                other
-                    .circuits
-                    .iter()
-                    .map(|other_circuit| circuit.mult(other_circuit))
-            })
-            .collect();
-        ManyCircuits { circuits }
-    }
-
-    delegate! {
-        to self.circuits {
-            /// Remove all circuits from `self` that do not satisfy `f`.
-            pub fn retain(&mut self, f: impl FnMut(&T) -> bool);
-            /// The number of circuits in `self`.
-            pub fn len(&self) -> usize;
-            /// Add a circuit to `self`.
-            pub fn push(&mut self, circuit: T);
-        }
     }
 }
 
@@ -108,30 +54,7 @@ impl CXCircuit for CXCircuit16 {
 
     fn mult(&self, other: &Self) -> Self {
         let other_t = other.transpose();
-        let mut result = [0; 16];
-        for i in 0..16 {
-            for j in 0..16 {
-                let elem_wise_mult = self.matrix[i].get() & other_t.matrix[j].get();
-                let bit = (elem_wise_mult.count_ones() % 2) as u16;
-                if bit == 1 {
-                    result[i] += bit << j;
-                }
-            }
-        }
-        Self::from_mat(result)
-    }
-
-    fn hash(&self) -> u32 {
-        // A hash function by chatGPT
-        let mut hash = 0x811c_9dc5_u32; // FNV-1a hash offset basis
-
-        for &value in &self.matrix {
-            // Mix the current matrix element into the hash using a simple shift and XOR
-            hash ^= value.get() as u32; // Correctly get the u16 value from NonZeroU16 and then extend to u32
-            hash = hash.wrapping_mul(0x0100_0193); // FNV-1a prime
-        }
-
-        hash
+        self.mult_transpose(&other_t)
     }
 }
 
@@ -153,6 +76,20 @@ impl CXCircuit16 {
             transposed.matrix[i] = NonZeroU16::new(row).unwrap();
         }
         transposed
+    }
+
+    fn mult_transpose(&self, other: &Self) -> Self {
+        let mut result = [0; 16];
+        for i in 0..16 {
+            for j in 0..16 {
+                let elem_wise_mult = self.matrix[i].get() & other.matrix[j].get();
+                let bit = (elem_wise_mult.count_ones() % 2) as u16;
+                if bit == 1 {
+                    result[i] += bit << j;
+                }
+            }
+        }
+        Self::from_mat(result)
     }
 }
 
@@ -180,15 +117,6 @@ mod tests {
         res[2] = sum_pow_two([3, 2]);
         res[6] = sum_pow_two([2, 3, 6]);
         assert_eq!(cx.matrix, res);
-    }
-
-    #[test]
-    fn test_hash_16() {
-        let mut cx = CXCircuit16::new();
-        cx.cx(0, 1);
-        cx.cx(3, 2);
-        cx.cx(2, 6);
-        assert_ne!(cx.hash(), CXCircuit16::new().hash());
     }
 
     #[test]
