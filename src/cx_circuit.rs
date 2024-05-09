@@ -14,6 +14,8 @@ pub trait CXCircuit: Copy + Eq + Sized + Hash {
     /// Compose two CX circuits together.
     fn mult(&self, other: &Self) -> Self;
 
+    fn mult_transpose(&self, other: &Self) -> Self;
+
     /// Construct a CX circuit from a list of CX gates.
     fn from_cxs(cxs: impl IntoIterator<Item = (usize, usize)>) -> Self {
         let mut cx = Self::new();
@@ -56,27 +58,6 @@ impl CXCircuit for CXCircuit16 {
         let other_t = other.transpose();
         self.mult_transpose(&other_t)
     }
-}
-
-impl CXCircuit16 {
-    fn from_mat(matrix: [u16; 16]) -> Self {
-        let matrix = matrix.map(|x| NonZeroU16::new(x).unwrap());
-        Self { matrix }
-    }
-
-    fn transpose(&self) -> Self {
-        let mut transposed = Self::new();
-        for i in 0..16 {
-            let mut row = 0;
-            for j in 0..16 {
-                if self.matrix[j].get() & (1 << i) != 0 {
-                    row += 1 << j;
-                }
-            }
-            transposed.matrix[i] = NonZeroU16::new(row).unwrap();
-        }
-        transposed
-    }
 
     fn mult_transpose(&self, other: &Self) -> Self {
         let mut result = [0; 16];
@@ -90,6 +71,27 @@ impl CXCircuit16 {
             }
         }
         Self::from_mat(result)
+    }
+}
+
+impl CXCircuit16 {
+    fn from_mat(matrix: [u16; 16]) -> Self {
+        let matrix = matrix.map(|x| NonZeroU16::new(x).unwrap());
+        Self { matrix }
+    }
+
+    pub fn transpose(&self) -> Self {
+        let mut transposed = Self::new();
+        for i in 0..16 {
+            let mut row = 0;
+            for j in 0..16 {
+                if self.matrix[j].get() & (1 << i) != 0 {
+                    row += 1 << j;
+                }
+            }
+            transposed.matrix[i] = NonZeroU16::new(row).unwrap();
+        }
+        transposed
     }
 }
 

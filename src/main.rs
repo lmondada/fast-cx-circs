@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn simle_case_e2e() {
-        let test_cases = [vec![(0, 2), (2, 0)], vec![(0, 4), (5, 0), (4, 0)]];
+        let test_cases = [vec![(0, 2), (2, 0)], vec![(0, 4), (4, 5), (5, 0)]];
         for cx_list in &test_cases {
             run_test_e2e(cx_list, bfs);
             run_test_e2e(cx_list, mitm_bfs);

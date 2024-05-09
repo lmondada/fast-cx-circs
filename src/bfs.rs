@@ -54,7 +54,7 @@ impl<'m, T: CXCircuit> BFS<'m, T> {
                 .moves
                 .get(move_id)
                 .expect("found an unknown move whilst backtracking");
-            curr = mv.mult(&curr);
+            curr = curr.mult_transpose(&mv);
         }
         moves
     }
@@ -67,7 +67,7 @@ pub fn bfs<T: CXCircuit>(target_circ: T, moves: &Moves<T>, max_steps: usize) -> 
     for _ in 1..=max_steps {
         let frontier = bfs.step();
         if frontier.contains(&target_circ) {
-            let moves = Vec::from_iter(bfs.backtrack(&target_circ).into_iter().rev());
+            let moves = Vec::from_iter(bfs.backtrack(&target_circ));
             return Some(moves);
         }
     }
@@ -116,7 +116,7 @@ fn apply_moves<T: CXCircuit, V>(
         CircMoves::with_capacity_and_hasher(circs.len() * moves.len() / 3, Default::default());
     for circ in circs.keys() {
         for (i, mv) in moves.iter().enumerate() {
-            let res = mv.mult(circ);
+            let res = circ.mult_transpose(&mv);
             if retain_f(&res) {
                 circuits.insert(res, i);
             }
@@ -138,7 +138,7 @@ fn intersect<T: CXCircuit>(
 
 fn backtrack_mitm<T: CXCircuit>(forward: &BFS<T>, backward: &BFS<T>, circ: T) -> Vec<usize> {
     let mut moves = Vec::new();
-    moves.extend(forward.backtrack(&circ).into_iter().rev());
-    moves.extend(backward.backtrack(&circ));
+    moves.extend(backward.backtrack(&circ).into_iter().rev());
+    moves.extend(forward.backtrack(&circ));
     moves
 }

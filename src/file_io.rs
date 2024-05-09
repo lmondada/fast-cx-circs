@@ -37,6 +37,8 @@ pub fn parse_cx_circuit(file: &File) -> io::Result<CXCircuit16> {
 }
 
 /// Parse a list of moves from a file.
+///
+/// Careful: moves are always as stored as the transpose!
 pub fn parse_moves(file: &File) -> io::Result<(Vec<(usize, usize)>, Moves<CXCircuit16>)> {
     let mut moves = Vec::new();
     let mut moves_inds = Vec::new();
@@ -45,10 +47,10 @@ pub fn parse_moves(file: &File) -> io::Result<(Vec<(usize, usize)>, Moves<CXCirc
             panic!("We currently only support qubits indices up to 15");
         }
         let cx_circ = CXCircuit16::from_cxs([(a, b)]);
-        moves.push(cx_circ);
+        moves.push(cx_circ.transpose());
         moves_inds.push((a, b));
         let cx_circ = CXCircuit16::from_cxs([(b, a)]);
-        moves.push(cx_circ);
+        moves.push(cx_circ.transpose());
         moves_inds.push((b, a));
     }
     Ok((moves_inds, moves))
