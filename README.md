@@ -1,7 +1,8 @@
 ### Usage
 
+Make sure to run in release mode:
 ```
-cargo run -- -i INPUT_CIRC -m ALLOWED_CX
+cargo run --release -- -i INPUT_CIRC -m ALLOWED_CX
 ```
 
 - `INPUT_CIRC` is the input circuit file.
