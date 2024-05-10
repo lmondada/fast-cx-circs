@@ -1,6 +1,7 @@
 use fxhash::{FxHashMap, FxHashSet};
 
 use crate::{cx_circuit::CXCircuit, CircMoves, Moves};
+use rayon::prelude::*;
 
 // const PRIME: usize = 10000007;
 
@@ -138,8 +139,11 @@ pub fn mitm_bfs<T: CXCircuit>(
                 "Extrapolating to {} CX gates...",
                 2 * max_steps + extra_depth
             );
-            if let Some((mv_id, circ_backward)) = apply_moves(&forward_frontier, &moves)
-                .find(|(_, circ)| backward_frontier.contains(&circ))
+            if let Some((mv_id, circ_backward)) = apply_moves(
+                forward_frontier.par_iter().copied(),
+                moves.par_iter().copied(),
+            )
+            .find_any(|(_, circ)| backward_frontier.contains(&circ))
             {
                 println!("Found solution!");
                 let extra_moves = moves[mv_id];
@@ -163,35 +167,39 @@ pub fn mitm_bfs<T: CXCircuit>(
     None
 }
 
-fn apply_moves<'a, T: CXCircuit + 'a>(
-    circs: impl IntoIterator<Item = &'a T> + 'a,
-    moves: impl IntoIterator<Item = &'a T> + Clone + 'a,
-) -> impl Iterator<Item = (usize, T)> + 'a {
-    circs.into_iter().flat_map(move |circ| {
+fn apply_moves<'a, T, Circs, Moves>(
+    circs: Circs,
+    moves: Moves,
+) -> impl ParallelIterator<Item = (usize, T)> + 'a
+where
+    T: CXCircuit + 'a,
+    Circs: ParallelIterator<Item = T> + 'a,
+    Moves: IndexedParallelIterator<Item = T> + Clone + Sync + 'a,
+{
+    circs.flat_map(move |circ| {
         moves
             .clone()
-            .into_iter()
+            .into_par_iter()
             .enumerate()
-            .map(|(mv_id, mv)| (mv_id, circ.mult_transpose(mv)))
+            .map(move |(mv_id, mv)| (mv_id, circ.mult_transpose(&mv)))
     })
 }
 
-fn collect_moves<T: CXCircuit, V>(
+fn collect_moves<T: CXCircuit, V: Send>(
     circs: &FxHashMap<T, V>,
     moves: &Moves<T>,
-    mut retain_f: impl FnMut(&T) -> bool,
+    retain_f: impl Fn(&T) -> bool + Sync,
 ) -> CircMoves<T> {
     // A rough estimate of the capacity required
-    let mut circuits =
-        CircMoves::with_capacity_and_hasher(circs.len() * moves.len() / 3, Default::default());
+    // let mut circuits =
+    //     CircMoves::with_capacity_and_hasher(circs.len() * moves.len() / 3, Default::default());
 
-    apply_moves(circs.keys(), moves).for_each(|(i, mv)| {
-        if retain_f(&mv) {
-            circuits.insert(mv, i);
-        }
-    });
+    let circs: Vec<_> = circs.keys().copied().collect();
+    let circuits = apply_moves(circs.into_par_iter(), moves.par_iter().copied())
+        .filter(|(_, mv)| retain_f(&mv))
+        .map(|(i, mv)| (mv, i))
+        .collect();
 
-    circuits.shrink_to_fit();
     circuits
 }
 

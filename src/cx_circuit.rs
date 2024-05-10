@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::num::NonZeroU16;
 
 /// A trait for a CX circuit with a fixed number of qubits.
-pub trait CXCircuit: Copy + Eq + Sized + Hash {
+pub trait CXCircuit: Copy + Eq + Sized + Hash + Send + Sync {
     /// A new CX circuit.
     fn new() -> Self;
 
