@@ -47,7 +47,6 @@ impl<'m, T: CXCircuit> BFS<'m, T> {
         let mut moves = Vec::new();
         let mut curr = *circ;
         for curr_depth in (1..self.cx_count_circs.len()).rev() {
-            dbg!(curr_depth);
             let Some(move_id) = self.cx_count_circs[curr_depth].get(&curr).copied() else {
                 // It's possible that the circuit is not at the highest depth, in which case
                 // we hope to find it in a future iteration
@@ -231,11 +230,8 @@ fn backtrack_mitm_extra<T: CXCircuit>(
     circ_backward: T,
 ) -> Vec<usize> {
     let mut moves = Vec::new();
-    println!("backtracking backward");
     moves.extend(backward.backtrack(&circ_backward).into_iter().rev());
-    println!("backtracking extra moves");
     moves.extend(forward.backtrack(&circ_mid));
-    println!("backtracking forward");
     moves.extend(forward.backtrack(&circ_forward));
     moves
 }
