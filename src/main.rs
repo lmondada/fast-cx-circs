@@ -30,7 +30,9 @@ struct Args {
     #[arg(short, long, default_value_t = String::from("out"))]
     output: String,
 
-    /// Maximum depth of BFS
+    /// Maximum depth of BFS. The maximum gate count will be 3*depth.
+    /// Warning: I do not recommend setting this value higher than 5, memory
+    /// consumption goes through the roof.
     #[arg(short, long, default_value_t = 5)]
     depth: usize,
 }
