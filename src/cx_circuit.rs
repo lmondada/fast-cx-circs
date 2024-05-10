@@ -1,6 +1,6 @@
 //! Circuits with only CX gates.
 
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::num::NonZeroU16;
 
 /// A trait for a CX circuit with a fixed number of qubits.
@@ -29,9 +29,19 @@ pub trait CXCircuit: Copy + Eq + Sized + Hash {
 /// A 16-qubit CX circuit.
 ///
 /// Represented by a boolean matrix.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct CXCircuit16 {
     matrix: [NonZeroU16; 16],
+}
+
+impl Hash for CXCircuit16 {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Pointer cast [NonZeroU16; 16] to [u64; 4]
+        let matrix = unsafe { &*self.matrix.as_ptr().cast::<[u64; 4]>() };
+        for &elem in matrix {
+            state.write_u64(elem);
+        }
+    }
 }
 
 fn eye<const N: usize>() -> [NonZeroU16; N] {
