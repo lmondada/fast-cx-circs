@@ -36,6 +36,8 @@ struct Args {
 }
 
 fn main() {
+    let start_time = std::time::Instant::now();
+
     let args = Args::parse();
     let input_filename = args.input;
     let moves_filename = args.moves;
@@ -53,6 +55,7 @@ fn main() {
         let file = File::open(moves_filename).expect("Unable to open moves file");
         parse_moves(&file).expect("Unable to parse moves files")
     };
+
     if let Some(solution) = mitm_bfs(circuit, &moves, max_depth, true) {
         println!("Found a solution: {solution:?}");
 
@@ -67,6 +70,9 @@ fn main() {
     } else {
         println!("No solution found");
     }
+
+    let elapsed_time = start_time.elapsed();
+    println!("\nTotal execution time: {:.2?}", elapsed_time);
 }
 
 fn check_solution_correctness(
