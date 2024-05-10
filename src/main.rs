@@ -1,4 +1,5 @@
 use bfs::mitm_bfs;
+use cx_circuit::{CXCircuit, CXCircuit16};
 use file_io::{parse_cx_circuit, parse_moves};
 
 use clap::Parser;
@@ -52,14 +53,33 @@ fn main() {
         let file = File::open(moves_filename).expect("Unable to open moves file");
         parse_moves(&file).expect("Unable to parse moves files")
     };
-    if let Some(solution) = mitm_bfs(circuit, &moves, max_depth) {
+    if let Some(solution) = mitm_bfs(circuit, &moves, max_depth, true) {
         println!("Found a solution: {solution:?}");
-        println!("Writing to {output_filename}");
-        let mut file = File::create(output_filename).expect("Unable to open solution file");
-        save_solution(&mut file, &solution, &move_inds).expect("Unable to save solution");
+
+        if check_solution_correctness(&solution, &move_inds, circuit) {
+            println!("Correctness check passed");
+            println!("Writing to {output_filename}");
+            let mut file = File::create(output_filename).expect("Unable to open solution file");
+            save_solution(&mut file, &solution, &move_inds).expect("Unable to save solution");
+        } else {
+            println!("Solution is incorrect! Please report this as a bug. Aborting");
+        }
     } else {
         println!("No solution found");
     }
+}
+
+fn check_solution_correctness(
+    solution: &[usize],
+    move_inds: &[(usize, usize)],
+    circuit: cx_circuit::CXCircuit16,
+) -> bool {
+    let mut solcirc = CXCircuit16::new();
+    for &move_ind in solution {
+        let (ctrl, tgt) = move_inds[move_ind];
+        solcirc.cx(ctrl, tgt);
+    }
+    solcirc == circuit
 }
 
 #[cfg(test)]
@@ -100,7 +120,7 @@ mod tests {
         let test_cases = [vec![(0, 2), (2, 0)], vec![(0, 4), (4, 5), (5, 0)]];
         for cx_list in &test_cases {
             run_test_e2e(cx_list, bfs);
-            run_test_e2e(cx_list, mitm_bfs);
+            run_test_e2e(cx_list, |a, b, c| mitm_bfs(a, b, c, false));
         }
     }
 }
