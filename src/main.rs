@@ -8,6 +8,7 @@ use std::fs::File;
 
 use crate::file_io::save_solution;
 
+mod a_star;
 mod bfs;
 mod cx_circuit;
 mod file_io;
