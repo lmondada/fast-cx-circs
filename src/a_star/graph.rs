@@ -1,12 +1,12 @@
 use std::cmp::max;
 
-use bimap::BiHashMap;
-use fxhash::{FxBuildHasher, FxHashSet, FxHasher};
+use fxhash::{FxBuildHasher, FxHashSet};
 
 use super::{AStarValue, CX};
 
 pub(super) type ANodeInd = usize;
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AEdge {
     Op {
         op: CX,
@@ -21,6 +21,7 @@ pub enum AEdge {
 }
 
 /// A node in the A* search graph
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) struct ANode {
     /// The cost of the path from the root to this node
     cost: usize,
@@ -32,25 +33,27 @@ pub(super) struct ANode {
     stats: AStarStats,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) struct AStarStats {
     cx_count_per_qb: Vec<u16>,
 }
 
 type AStarValueMap<V> = bimap::BiHashMap<ANodeInd, V, FxBuildHasher, FxBuildHasher>;
 
-pub(super) struct AStarGraph<'m, V> {
+#[derive(Debug)]
+pub(super) struct AStarGraph<V> {
     nodes: Vec<ANode>,
     values: AStarValueMap<V>,
-    pub(super) allowed_moves: &'m FxHashSet<CX>,
+    pub(super) allowed_moves: FxHashSet<CX>,
 }
 
-impl<'m, V: AStarValue> AStarGraph<'m, V> {
-    pub(super) fn new(start: V, allowed_moves: &'m FxHashSet<CX>) -> Self {
+impl<V: AStarValue> AStarGraph<V> {
+    pub(super) fn new(start: V, allowed_moves: impl IntoIterator<Item = CX>) -> Self {
         let values = AStarValueMap::from_iter([(0, start)]);
         Self {
             nodes: vec![ANode::new_root()],
             values,
-            allowed_moves,
+            allowed_moves: FxHashSet::from_iter(allowed_moves),
         }
     }
 
@@ -101,7 +104,7 @@ impl<'m, V: AStarValue> AStarGraph<'m, V> {
         self.nodes[ind].cost
     }
 
-    pub(super) fn add_cx(&mut self, node: ANodeInd, CX { ctrl, tgt }: CX) {
+    pub(super) fn add_cx(&mut self, node: ANodeInd, CX { ctrl, tgt }: CX) -> ANodeInd {
         // Construct new edge
         let edge = AEdge::Op {
             op: CX { ctrl, tgt },
@@ -124,13 +127,21 @@ impl<'m, V: AStarValue> AStarGraph<'m, V> {
         // Update node value
         let node_value = self.values.get_by_left(&node).unwrap();
         let new_value = node_value.cx(ctrl, tgt);
+        let new_node_ind = self.nodes.len();
 
-        self.values.insert(self.nodes.len(), new_value);
+        self.values.insert(new_node_ind, new_value);
         self.nodes
             .push(ANode::new_child(edge, cost, cx_count_per_qb));
+        self.nodes[node].next.push(edge);
+        new_node_ind
     }
 
-    pub(super) fn add_merge(&mut self, src1: ANodeInd, src2: ANodeInd) {
+    pub(super) fn add_merge(
+        &mut self,
+        src1: ANodeInd,
+        src2: ANodeInd,
+        used_qubits: &FxHashSet<u8>,
+    ) -> ANodeInd {
         // Construct new edge
         let edge = AEdge::Merge {
             src1,
@@ -152,18 +163,23 @@ impl<'m, V: AStarValue> AStarGraph<'m, V> {
         }
 
         // Update node value
-        // let node_value = self.values.get_by_left(&node).unwrap();
-        // let new_value = node_value.cx(ctrl, tgt);
+        let src1_value = self.values.get_by_left(&src1).unwrap();
+        let src2_value = self.values.get_by_left(&src2).unwrap();
+        let new_value = src1_value.merge(src2_value, used_qubits);
+        let new_node_ind = self.nodes.len();
 
-        // self.values.insert(self.nodes.len(), new_value);
-        // self.nodes
-        //     .push(ANode::new_child(edge, cost, cx_count_per_qb));
+        self.values.insert(new_node_ind, new_value);
+        self.nodes
+            .push(ANode::new_child(edge, cost, cx_count_per_qb));
+        self.nodes[src1].next.push(edge);
+        self.nodes[src2].next.push(edge);
+        new_node_ind
     }
 
     /// Find the qubits that have CX ops that are
     ///   i) in the past of `top` but
     ///  ii) not in the past of `ind`
-    pub(super) fn disallowed_qubits(&self, top: ANodeInd, ind: ANodeInd) -> FxHashSet<u8> {
+    pub(super) fn disallowed_qubits(&self, ind: ANodeInd, top: ANodeInd) -> FxHashSet<u8> {
         let mut cx_count_per_qb = self.nodes[top].stats.cx_count_per_qb.clone();
         for (qb, count) in self.nodes[ind].stats.cx_count_per_qb.iter().enumerate() {
             cx_count_per_qb[qb] -= count;
@@ -211,5 +227,36 @@ impl AEdge {
             &AEdge::Op { src, .. } => vec![src],
             &AEdge::Merge { src1, src2, .. } => vec![src1, src2],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_cx() {
+        let mut graph = AStarGraph::new([false; 5], []);
+        let child = graph.add_cx(graph.root_ind(), CX { ctrl: 0, tgt: 1 });
+        assert_eq!(graph.cost(child), 1);
+        assert_eq!(graph.nodes[child].stats.cx_count_per_qb, vec![1, 1]);
+        let grandchild = graph.add_cx(child, CX { ctrl: 0, tgt: 2 });
+        assert_eq!(graph.cost(grandchild), 2);
+        assert_eq!(graph.nodes[grandchild].stats.cx_count_per_qb, vec![2, 1, 1]);
+    }
+    #[test]
+    fn test_disallowed_qubits() {
+        let mut graph = AStarGraph::new([false; 5], []);
+        let child1 = graph.add_cx(graph.root_ind(), CX { ctrl: 0, tgt: 1 });
+        let child2 = graph.add_cx(graph.root_ind(), CX { ctrl: 2, tgt: 3 });
+        let grandchild = graph.add_merge(child1, child2, &FxHashSet::from_iter([2, 3]));
+        assert_eq!(
+            graph.disallowed_qubits(child1, grandchild),
+            FxHashSet::from_iter([2, 3])
+        );
+        assert_eq!(
+            graph.disallowed_qubits(child2, grandchild),
+            FxHashSet::from_iter([0, 1])
+        );
     }
 }

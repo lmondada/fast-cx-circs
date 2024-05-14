@@ -7,7 +7,7 @@ use std::{cmp::Reverse, hash::Hash};
 
 use graph::{ANodeInd, AStarGraph};
 
-#[derive(Clone, Copy, Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Hash, Eq, PartialEq, Debug)]
 pub struct CX {
     ctrl: u8,
     tgt: u8,
@@ -25,10 +25,18 @@ where
 
     /// Apply a CX gate to the current value
     fn cx(&self, ctrl: u8, tgt: u8) -> Self;
+
+    /// Merge two values
+    fn merge(&self, other: &Self, used_qubits: &FxHashSet<u8>) -> Self;
 }
+
 type PQ = PriorityQueue<usize, Reverse<usize>>;
 
-pub fn a_star<V: AStarValue>(start: V, goal: &V, allowed_moves: &FxHashSet<CX>) -> Vec<CX> {
+pub fn a_star<V: AStarValue>(
+    start: V,
+    goal: &V,
+    allowed_moves: impl IntoIterator<Item = CX>,
+) -> Vec<CX> {
     let mut graph = AStarGraph::new(start, allowed_moves);
 
     let mut pq = PQ::new();
@@ -64,4 +72,33 @@ pub fn a_star<V: AStarValue>(start: V, goal: &V, allowed_moves: &FxHashSet<CX>) 
         }
     }
     todo!()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl AStarValue for [bool; 5] {
+        fn dist(&self, other: &[bool; 5]) -> usize {
+            self.iter()
+                .zip(other)
+                .map(|(&a, &b)| (a != b) as usize)
+                .sum()
+        }
+
+        fn cx(&self, ctrl: u8, tgt: u8) -> Self {
+            let mut new = self.clone();
+            new[ctrl as usize] = true;
+            new[tgt as usize] = true;
+            new
+        }
+
+        fn merge(&self, other: &Self, used_qubits: &FxHashSet<u8>) -> Self {
+            let mut new = self.clone();
+            for qb in used_qubits {
+                new[*qb as usize] = other[*qb as usize];
+            }
+            new
+        }
+    }
 }
