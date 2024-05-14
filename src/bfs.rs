@@ -91,7 +91,8 @@ pub fn bfs<T: CXCircuit>(target_circ: T, moves: &Moves<T>, max_steps: usize) -> 
 /// Optionally, extrapolate to circuits with up to 3 * `max_steps` gates. This
 /// has no additional memory costs.
 pub fn mitm_bfs<T: CXCircuit>(
-    target_circ: T,
+    source: T,
+    target: T,
     moves: &Moves<T>,
     max_steps: usize,
     extrapolate: bool,
@@ -101,9 +102,9 @@ pub fn mitm_bfs<T: CXCircuit>(
     }
 
     // Start one BFS at the identity circuit
-    let mut forward = BFS::new(T::new(), moves);
+    let mut forward = BFS::new(source, moves);
     // Start one BFS at the target circuit
-    let mut backward = BFS::new(target_circ, moves);
+    let mut backward = BFS::new(target, moves);
 
     let mut forward_frontier = None;
     let mut backward_frontier = None;

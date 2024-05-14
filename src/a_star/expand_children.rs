@@ -1,7 +1,8 @@
 use fxhash::{FxHashMap, FxHashSet};
-use itertools::iproduct;
+use itertools::{iproduct, Itertools};
 
-use super::{graph::AEdge, ANodeInd, AStarGraph, AStarValue, CX};
+use super::{graph::AEdge, ANodeInd, AStarGraph, AStarValue};
+use crate::CX;
 
 impl<V: AStarValue> AStarGraph<V> {
     /// Add all children of `ind` to the graph.
@@ -12,34 +13,42 @@ impl<V: AStarValue> AStarGraph<V> {
     /// affect disjoint qubits.
     ///
     /// This implements the following logic:
+    ///  - If `ind` is the root, you can add a CX anywhere but cannot merge
     ///  - If `ind` is the target of a CX edge, we can:
-    ///      - Add a CX on the same qubits -- it must be in the reverse direction,
-    ///        otherwise it cancels out
-    ///      - Add merges -- we can add merges between `ind` and any other
-    ///        compatible node.
-    ///  - If `ind` is the target merge edge, we distinguish between merge
-    ///    preceded by two CX edges and merge preceded by at least one other
-    ///    merge edge. In the latter case, we cannot add CX edges anymore (the
-    ///    only time we allow adding more than one merge in a row is when we have
-    ///    already added all necessary CX).
-    ///      - If preceded by two CX edges, we can add a CX that spans both sets
-    ///        of qubits
-    ///      - In every case, we can add merges between `ind` and any other
-    ///        compatible node.
-    pub(super) fn expand_children(&mut self, ind: ANodeInd) {
+    ///      - Add any CX that overlaps at least one qubit with `ind`
+    ///      - Add merges -- we can add merges between `ind` (LHS) and any other
+    ///        compatible RHS merge node.
+    ///  - If `ind` is the target of a merge edge, we distinguish between
+    ///    "terminal" merges and "non-terminal" merges. Terminal merges are only
+    ///    allowed after all CX gates have been added. In that case, we cannot
+    ///    add CX edges anymore.
+    ///      - In the case of non-terminal merges, we can add CXs that overlap
+    ///        with at least one qubit of each of the two preceding CXs.
+    ///      - In the terminal case, we cannot add CXs but can add any merges.
+    ///
+    /// During the non-terminal phase, there may never be two succeeding merges.
+    /// This restriction is lifted in the terminal phase (hence the name
+    /// "terminal merges"). At that point, no more CXs may be added.
+    /// However, we allow terminal merges only if the CXs that precede the
+    /// terminal merges are complete: there is no point in doing terminal merges
+    /// if the qubits still need additional CXs.
+    pub(super) fn expand_children(&mut self, ind: ANodeInd, is_complete: impl Fn(u8) -> bool) {
         // Find out if and where we can add CXs, and add them
         match self.prev_edge(ind) {
-            Some(AEdge::Op {
+            Some(&AEdge::Op {
                 op: CX { ctrl, tgt },
                 ..
             }) => {
-                // We can either add a CX on the same two qubits, or add merges
-                let rev_cx = CX {
-                    ctrl: *tgt,
-                    tgt: *ctrl,
-                };
-                if self.allowed_moves.contains(&rev_cx) {
-                    self.add_cx(ind, rev_cx);
+                let allowed_moves = self
+                    .allowed_moves
+                    .iter()
+                    .copied()
+                    .filter(|cx| {
+                        cx.ctrl == ctrl || cx.tgt == ctrl || cx.ctrl == tgt || cx.tgt == tgt
+                    })
+                    .collect_vec();
+                for cx in allowed_moves {
+                    self.add_cx(ind, cx);
                 }
             }
             Some(merge_edge @ AEdge::Merge { .. }) => {
@@ -60,10 +69,18 @@ impl<V: AStarValue> AStarGraph<V> {
                     }
                 }
             }
-            None => {}
+            None => {
+                // We are at the root, any CX is allowed
+                let allowed_moves = self.allowed_moves.clone();
+                for cx in allowed_moves {
+                    self.add_cx(ind, cx);
+                }
+            }
         }
-        // We can add merges if `ind` is not the root
-        if self.prev_edge(ind).is_some() {
+        // We can add merges either after CXs or in the terminal merge phase
+        if self.is_mergeable(ind, is_complete) {
+            // temp: only merge after CX (no cascading merges)
+            // if matches!(self.prev_edge(ind), Some(AEdge::Op { .. })) {
             let mergeable_nodes = self.find_mergeable_nodes(ind);
             for (node, qbs) in mergeable_nodes {
                 self.add_merge(ind, node, &qbs);
@@ -71,7 +88,57 @@ impl<V: AStarValue> AStarGraph<V> {
         }
     }
 
+    /// Whether `ind` can be the LHS of a merge.
+    ///
+    /// The following must hold:
+    ///  - `ind` is not the root
+    ///  - `ind` has not been expanded yet
+    ///  - either of
+    ///     * the predecessor of `ind` is a CX edge, or
+    ///     * all CX edges in the past are complete, i.e. no further gates are
+    ///       required on the qubits the op acts on.
+    fn is_mergeable(&self, ind: ANodeInd, is_complete: impl Fn(u8) -> bool) -> bool {
+        if self.is_expanded(ind) {
+            // Cannot merge nodes that have already been expanded
+            return false;
+        }
+        match self.prev_edge(ind) {
+            None => {
+                // Cannot merge root
+                false
+            }
+            Some(AEdge::Op { .. }) => {
+                // Can always merge if preceded by CX
+                true
+            }
+            Some(&AEdge::Merge { src1, src2, .. }) => {
+                let mut qubits = Vec::new();
+                // Here we should be computing the qubits of CXs in the past
+                // recursively -- instead, we rely on the fact that a previous
+                // merge would have already been checked for mergeability
+                if let Some(&AEdge::Op {
+                    op: CX { ctrl, tgt },
+                    ..
+                }) = self.prev_edge(src1)
+                {
+                    qubits.extend([ctrl, tgt]);
+                }
+                if let Some(&AEdge::Op {
+                    op: CX { ctrl, tgt },
+                    ..
+                }) = self.prev_edge(src2)
+                {
+                    qubits.extend([ctrl, tgt]);
+                }
+                qubits.into_iter().all(|qb| is_complete(qb))
+            }
+        }
+    }
+
+    /// Find all possible RHS merges given the LHS `ind`.
     fn find_mergeable_nodes(&self, ind: ANodeInd) -> FxHashMap<ANodeInd, FxHashSet<u8>> {
+        assert!(!self.is_expanded(ind), "cannot merge once expanded");
+
         // Map each node to the qubits we cannot add CXs to
         let mut disallowed_qbs = FxHashMap::default();
 
@@ -116,27 +183,25 @@ impl<V: AStarValue> AStarGraph<V> {
                         if nodes_in_past.contains(&dst) {
                             // We have already processed this node in the backward pass, skip
                             queue.push(dst);
-                            println!(
-                                "dst {:?} was already processed in backward pass -> skip",
-                                dst
-                            );
                             continue;
                         }
                         // check that we are not using a disallowed qubit
                         let disallowed_src = disallowed_qbs.get(&src).unwrap();
                         if disallowed_src.contains(&ctrl) || disallowed_src.contains(&tgt) {
-                            println!("finding disallowed CX({}, {}) -> skip", ctrl, tgt);
                             continue;
                         }
                         // We can directly proceed as `dst` has only `src` as a parent
                         if !disallowed_qbs.contains_key(&dst) {
-                            println!("finding new of interest CX({}, {}) -> add", ctrl, tgt);
                             disallowed_qbs.insert(dst, disallowed_src.clone());
                             queue.push(dst);
-                            let mut used_qubits: FxHashSet<u8> =
-                                mergeable_nodes.get(&src).cloned().unwrap_or_default();
-                            used_qubits.extend([ctrl, tgt]);
-                            mergeable_nodes.insert(dst, used_qubits);
+                            // Only merge nodes that have been expanded before
+                            // (otherwise we are merging with a lot of rubbish)
+                            if self.is_expanded(dst) {
+                                let mut used_qubits: FxHashSet<u8> =
+                                    mergeable_nodes.get(&src).cloned().unwrap_or_default();
+                                used_qubits.extend([ctrl, tgt]);
+                                mergeable_nodes.insert(dst, used_qubits);
+                            }
                         }
                     }
                     &AEdge::Merge { src1, src2, dst } => {
@@ -157,12 +222,16 @@ impl<V: AStarValue> AStarGraph<V> {
                             let intersection = disallowed_src1.intersection(&disallowed_src2);
                             disallowed_qbs.insert(dst, intersection.copied().collect());
                             queue.push(dst);
-                            let mut used_qubits: FxHashSet<u8> =
-                                mergeable_nodes.get(&src1).cloned().unwrap_or_default();
-                            if let Some(qbs) = mergeable_nodes.get(&src2) {
-                                used_qubits.extend(qbs);
+                            // Only merge nodes that have been expanded before
+                            // (otherwise we are merging with a lot of rubbish)
+                            if self.is_expanded(dst) {
+                                let mut used_qubits: FxHashSet<u8> =
+                                    mergeable_nodes.get(&src1).cloned().unwrap_or_default();
+                                if let Some(qbs) = mergeable_nodes.get(&src2) {
+                                    used_qubits.extend(qbs);
+                                }
+                                mergeable_nodes.insert(dst, used_qubits);
                             }
-                            mergeable_nodes.insert(dst, used_qubits);
                         }
                     }
                 }
@@ -213,8 +282,14 @@ mod tests {
             CX { ctrl: 2, tgt: 3 },
         ]
         .into_iter()
-        .map(|cx| graph.add_cx(graph.root_ind(), cx))
+        .map(|cx| graph.add_cx(graph.root_ind(), cx).unwrap())
         .collect_vec();
+
+        // Dummy expand as we can only merge expanded nodes
+        graph.add_cx(children[1], CX { ctrl: 0, tgt: 4 }).unwrap();
+        graph.add_cx(children[2], CX { ctrl: 0, tgt: 4 }).unwrap();
+        assert!(graph.is_expanded(children[1]));
+        assert!(graph.is_expanded(children[2]));
 
         let mergeable_nodes = graph.find_mergeable_nodes(children[0]);
         assert_eq!(
@@ -222,8 +297,12 @@ mod tests {
             FxHashSet::from_iter([children[1], children[2]])
         );
 
-        let grandchild = graph.add_cx(children[0], CX { ctrl: 1, tgt: 2 });
-        let grandchild2 = graph.add_cx(children[0], CX { ctrl: 3, tgt: 4 });
+        let grandchild = graph.add_cx(children[0], CX { ctrl: 1, tgt: 2 }).unwrap();
+        let grandchild2 = graph.add_cx(children[0], CX { ctrl: 3, tgt: 4 }).unwrap();
+
+        // Dummy expand as we can only merge expanded nodes
+        graph.add_cx(grandchild2, CX { ctrl: 0, tgt: 2 }).unwrap();
+        assert!(graph.is_expanded(grandchild2));
 
         let mergeable_nodes = graph.find_mergeable_nodes(grandchild);
         assert_eq!(

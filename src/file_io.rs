@@ -5,7 +5,8 @@ use std::{
 
 use crate::{
     cx_circuit::{CXCircuit, CXCircuit16},
-    Moves,
+    stab_state::StabiliserState,
+    Moves, CX,
 };
 
 fn parse_file(file: &File) -> io::Result<Vec<(usize, usize)>> {
@@ -31,9 +32,20 @@ pub fn parse_cx_circuit(file: &File) -> io::Result<CXCircuit16> {
     let mut circuit = CXCircuit16::new();
     let all_cxs = parse_file(file)?;
     for (a, b) in &all_cxs {
-        circuit.cx(*a, *b);
+        circuit.add_cx(*a, *b);
     }
     Ok(circuit)
+}
+
+pub fn parse_stabiliser(file: &File) -> io::Result<StabiliserState<16>> {
+    let reader = io::BufReader::new(file);
+    let lines = reader.lines().collect::<io::Result<Vec<_>>>()?;
+    Ok(StabiliserState::from_strs(lines.iter().map(|s| s.as_str())))
+    // let all_cxs = parse_file(file)?;
+    // for (a, b) in &all_cxs {
+    //     stabiliser.add_cx(*a, *b);
+    // }
+    // Ok(stabiliser)
 }
 
 /// Parse a list of moves from a file.
@@ -56,14 +68,9 @@ pub fn parse_moves(file: &File) -> io::Result<(Vec<(usize, usize)>, Moves<CXCirc
     Ok((moves_inds, moves))
 }
 
-pub fn save_solution(
-    file: &mut File,
-    solution: &[usize],
-    move_inds: &[(usize, usize)],
-) -> io::Result<()> {
-    for &move_ind in solution {
-        let (a, b) = move_inds[move_ind];
-        writeln!(file, "{} {}", a, b)?;
+pub fn save_solution(file: &mut File, solution: &[CX]) -> io::Result<()> {
+    for &CX { ctrl, tgt } in solution {
+        writeln!(file, "{} {}", ctrl, tgt)?;
     }
     Ok(())
 }

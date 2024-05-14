@@ -2,7 +2,8 @@ use std::cmp::max;
 
 use fxhash::{FxBuildHasher, FxHashSet};
 
-use super::{AStarValue, CX};
+use super::AStarValue;
+use crate::CX;
 
 pub(super) type ANodeInd = usize;
 
@@ -84,13 +85,17 @@ impl<V: AStarValue> AStarGraph<V> {
     pub(super) fn path(&self, ind: ANodeInd) -> Vec<CX> {
         let mut path = Vec::new();
         let mut curr_nodes = vec![ind];
+        let mut seen_nodes = FxHashSet::default();
         while let Some(node) = curr_nodes.pop() {
+            if !seen_nodes.insert(node) {
+                continue;
+            }
             match self.nodes[node].prev.as_ref() {
-                Some(AEdge::Op { op, src, dst }) => {
+                Some(AEdge::Op { op, src, .. }) => {
                     path.push(*op);
                     curr_nodes.push(*src);
                 }
-                Some(AEdge::Merge { src1, src2, dst }) => {
+                Some(AEdge::Merge { src1, src2, .. }) => {
                     curr_nodes.extend([src1, src2]);
                 }
                 None => {}
@@ -104,7 +109,11 @@ impl<V: AStarValue> AStarGraph<V> {
         self.nodes[ind].cost
     }
 
-    pub(super) fn add_cx(&mut self, node: ANodeInd, CX { ctrl, tgt }: CX) -> ANodeInd {
+    pub(super) fn is_expanded(&self, ind: ANodeInd) -> bool {
+        !self.nodes[ind].next.is_empty()
+    }
+
+    pub(super) fn add_cx(&mut self, node: ANodeInd, CX { ctrl, tgt }: CX) -> Option<ANodeInd> {
         // Construct new edge
         let edge = AEdge::Op {
             op: CX { ctrl, tgt },
@@ -116,24 +125,33 @@ impl<V: AStarValue> AStarGraph<V> {
         let cost = self.cost(node) + 1;
 
         // Update stats, resizing if too small
-        let mut cx_count_per_qb = self.nodes[node].stats.cx_count_per_qb.clone();
-        let max_qb = max(ctrl, tgt) as usize;
-        if cx_count_per_qb.len() <= max_qb {
-            cx_count_per_qb.resize(max_qb + 1, 0);
-        }
-        cx_count_per_qb[ctrl as usize] += 1;
-        cx_count_per_qb[tgt as usize] += 1;
+        let cx_count_per_qb = {
+            let mut cx_count_per_qb = self.nodes[node].stats.cx_count_per_qb.clone();
+            let max_qb = max(ctrl, tgt) as usize;
+            if cx_count_per_qb.len() <= max_qb {
+                cx_count_per_qb.resize(max_qb + 1, 0);
+            }
+            cx_count_per_qb[ctrl as usize] += 1;
+            cx_count_per_qb[tgt as usize] += 1;
+            cx_count_per_qb
+        };
 
         // Update node value
-        let node_value = self.values.get_by_left(&node).unwrap();
-        let new_value = node_value.cx(ctrl, tgt);
-        let new_node_ind = self.nodes.len();
+        let new_value = {
+            let node_value = self.values.get_by_left(&node).unwrap();
+            node_value.cx(ctrl, tgt)
+        };
 
-        self.values.insert(new_node_ind, new_value);
-        self.nodes
-            .push(ANode::new_child(edge, cost, cx_count_per_qb));
-        self.nodes[node].next.push(edge);
-        new_node_ind
+        if !self.values.contains_right(&new_value) {
+            let new_node_ind = self.nodes.len();
+            self.values.insert(new_node_ind, new_value);
+            self.nodes
+                .push(ANode::new_child(edge, cost, cx_count_per_qb));
+            self.nodes[node].next.push(edge);
+            Some(new_node_ind)
+        } else {
+            None
+        }
     }
 
     pub(super) fn add_merge(
@@ -141,7 +159,7 @@ impl<V: AStarValue> AStarGraph<V> {
         src1: ANodeInd,
         src2: ANodeInd,
         used_qubits: &FxHashSet<u8>,
-    ) -> ANodeInd {
+    ) -> Option<ANodeInd> {
         // Construct new edge
         let edge = AEdge::Merge {
             src1,
@@ -166,14 +184,18 @@ impl<V: AStarValue> AStarGraph<V> {
         let src1_value = self.values.get_by_left(&src1).unwrap();
         let src2_value = self.values.get_by_left(&src2).unwrap();
         let new_value = src1_value.merge(src2_value, used_qubits);
-        let new_node_ind = self.nodes.len();
 
-        self.values.insert(new_node_ind, new_value);
-        self.nodes
-            .push(ANode::new_child(edge, cost, cx_count_per_qb));
-        self.nodes[src1].next.push(edge);
-        self.nodes[src2].next.push(edge);
-        new_node_ind
+        if !self.values.contains_right(&new_value) {
+            let new_node_ind = self.nodes.len();
+            self.values.insert(new_node_ind, new_value);
+            self.nodes
+                .push(ANode::new_child(edge, cost, cx_count_per_qb));
+            self.nodes[src1].next.push(edge);
+            self.nodes[src2].next.push(edge);
+            Some(new_node_ind)
+        } else {
+            None
+        }
     }
 
     /// Find the qubits that have CX ops that are
@@ -217,8 +239,8 @@ impl ANode {
 impl AEdge {
     fn dst(&self) -> ANodeInd {
         match self {
-            &AEdge::Op { op, src, dst } => dst,
-            &AEdge::Merge { src1, src2, dst } => dst,
+            &AEdge::Op { dst, .. } => dst,
+            &AEdge::Merge { dst, .. } => dst,
         }
     }
 
@@ -237,19 +259,27 @@ mod tests {
     #[test]
     fn test_add_cx() {
         let mut graph = AStarGraph::new([false; 5], []);
-        let child = graph.add_cx(graph.root_ind(), CX { ctrl: 0, tgt: 1 });
+        let child = graph
+            .add_cx(graph.root_ind(), CX { ctrl: 0, tgt: 1 })
+            .unwrap();
         assert_eq!(graph.cost(child), 1);
         assert_eq!(graph.nodes[child].stats.cx_count_per_qb, vec![1, 1]);
-        let grandchild = graph.add_cx(child, CX { ctrl: 0, tgt: 2 });
+        let grandchild = graph.add_cx(child, CX { ctrl: 0, tgt: 2 }).unwrap();
         assert_eq!(graph.cost(grandchild), 2);
         assert_eq!(graph.nodes[grandchild].stats.cx_count_per_qb, vec![2, 1, 1]);
     }
     #[test]
     fn test_disallowed_qubits() {
         let mut graph = AStarGraph::new([false; 5], []);
-        let child1 = graph.add_cx(graph.root_ind(), CX { ctrl: 0, tgt: 1 });
-        let child2 = graph.add_cx(graph.root_ind(), CX { ctrl: 2, tgt: 3 });
-        let grandchild = graph.add_merge(child1, child2, &FxHashSet::from_iter([2, 3]));
+        let child1 = graph
+            .add_cx(graph.root_ind(), CX { ctrl: 0, tgt: 1 })
+            .unwrap();
+        let child2 = graph
+            .add_cx(graph.root_ind(), CX { ctrl: 2, tgt: 3 })
+            .unwrap();
+        let grandchild = graph
+            .add_merge(child1, child2, &FxHashSet::from_iter([2, 3]))
+            .unwrap();
         assert_eq!(
             graph.disallowed_qubits(child1, grandchild),
             FxHashSet::from_iter([2, 3])

@@ -7,13 +7,9 @@ use std::{cmp::Reverse, hash::Hash};
 
 use graph::{ANodeInd, AStarGraph};
 
-#[derive(Clone, Copy, Hash, Eq, PartialEq, Debug)]
-pub struct CX {
-    ctrl: u8,
-    tgt: u8,
-}
+use crate::CX;
 
-pub trait AStarValue: Hash + Eq + PartialEq
+pub trait AStarValue: Hash + Eq + PartialEq + Clone
 where
     Self: Sized,
 {
@@ -23,6 +19,9 @@ where
     /// A* will find the shortest path.
     fn dist(&self, other: &Self) -> usize;
 
+    /// Whether the target was reached on the given qubit
+    fn is_complete(&self, qb: u8, target: &Self) -> bool;
+
     /// Apply a CX gate to the current value
     fn cx(&self, ctrl: u8, tgt: u8) -> Self;
 
@@ -30,52 +29,87 @@ where
     fn merge(&self, other: &Self, used_qubits: &FxHashSet<u8>) -> Self;
 }
 
-type PQ = PriorityQueue<usize, Reverse<usize>>;
+type PQ = PriorityQueue<usize, PQCost>;
+
+/// The cost function for the priority queue
+/// We want
+///  i) low estimated total cost
+/// ii) break ties using highest cost already reached
+#[derive(Hash, Eq, PartialEq, Clone, PartialOrd, Ord, Debug)]
+struct PQCost(Reverse<usize>, usize);
+impl PQCost {
+    fn new(cost: usize, gates: usize) -> Self {
+        PQCost(Reverse(cost), gates)
+    }
+
+    fn cost(&self) -> usize {
+        self.0 .0
+    }
+}
 
 pub fn a_star<V: AStarValue>(
     start: V,
-    goal: &V,
+    target: &V,
     allowed_moves: impl IntoIterator<Item = CX>,
-) -> Vec<CX> {
+    max_depth: Option<usize>,
+) -> Option<Vec<CX>> {
     let mut graph = AStarGraph::new(start, allowed_moves);
 
     let mut pq = PQ::new();
-    pq.push(graph.root_ind(), Reverse(graph.root().dist(goal)));
+    pq.push(graph.root_ind(), PQCost::new(graph.root().dist(target), 0));
 
     // The solution of the current best solution
     let mut min_solution: Option<Vec<_>> = None;
 
-    while let Some((ind, Reverse(cost))) = pq.pop() {
-        if let Some(min_solution) = min_solution.as_ref() {
-            if cost > min_solution.len() {
-                // No further solution will be cheaper, so we are done
+    // For progress reporting purposes
+    let mut max_cost: Option<usize> = None;
+
+    loop {
+        let (ind, prio) = pq.pop().expect("Ran out of circuits to explore?!");
+        if max_cost.is_none() || graph.cost(ind) > max_cost.unwrap() {
+            max_cost = Some(graph.cost(ind));
+            println!("Max cost explored: {}", max_cost.unwrap());
+            if max_depth.is_some() && max_cost > max_depth {
+                println!("Max depth reached, aborting");
                 break;
             }
         }
-        graph.expand_children(ind);
+        if let Some(min_solution) = min_solution.as_ref() {
+            if prio.cost() > min_solution.len() {
+                // No further solution will be cheaper, so we are done
+                println!("Found solution is optimal. Terminating");
+                break;
+            }
+        }
+        let value = graph.value(ind).unwrap().clone();
+        graph.expand_children(ind, |qb| value.is_complete(qb, target));
         for new_child in graph.children(ind) {
-            if graph.value(new_child) == Some(goal) {
+            if graph.value(new_child) == Some(target) {
                 let new_solution = graph.path(new_child);
                 match min_solution {
                     Some(sol) if new_solution.len() < sol.len() => {
                         min_solution = Some(new_solution);
+                        println!("New best solution: {:?}", min_solution.as_ref().unwrap());
                     }
                     None => {
                         min_solution = Some(new_solution);
+                        println!("New best solution: {:?}", min_solution.as_ref().unwrap());
                     }
                     _ => {}
                 }
             }
             let mut cost_estimate = graph.cost(new_child);
-            cost_estimate += graph.value(new_child).unwrap().dist(goal);
-            pq.push(new_child, Reverse(cost_estimate));
+            cost_estimate += graph.value(new_child).unwrap().dist(target);
+            pq.push(new_child, PQCost::new(cost_estimate, graph.cost(new_child)));
         }
     }
-    todo!()
+    min_solution
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::cx_circuit::{CXCircuit, CXCircuit16};
+
     use super::*;
 
     impl AStarValue for [bool; 5] {
@@ -100,5 +134,34 @@ mod tests {
             }
             new
         }
+
+        fn is_complete(&self, qb: u8, target: &Self) -> bool {
+            self[qb as usize] == target[qb as usize]
+        }
+    }
+
+    #[test]
+    fn test_a_star_simple() {
+        let mut circuit = CXCircuit16::new();
+        circuit.add_cx(0, 9);
+        circuit.add_cx(0, 10);
+        let moves = vec![CX { ctrl: 0, tgt: 9 }, CX { ctrl: 0, tgt: 10 }];
+        let result = a_star(CXCircuit16::new(), &circuit, moves, Some(2)).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_a_star_with_merge() {
+        let mut circuit = CXCircuit16::new();
+        circuit.add_cx(0, 1);
+        circuit.add_cx(2, 3);
+        circuit.add_cx(1, 4);
+        let moves = vec![
+            CX { ctrl: 0, tgt: 1 },
+            CX { ctrl: 2, tgt: 3 },
+            CX { ctrl: 1, tgt: 4 },
+        ];
+        let result = a_star(CXCircuit16::new(), &circuit, moves, Some(3)).unwrap();
+        assert_eq!(result.len(), 3);
     }
 }

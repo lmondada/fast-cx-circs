@@ -3,13 +3,15 @@
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroU16;
 
+use crate::a_star::AStarValue;
+
 /// A trait for a CX circuit with a fixed number of qubits.
 pub trait CXCircuit: Copy + Eq + Sized + Hash + Send + Sync {
     /// A new CX circuit.
     fn new() -> Self;
 
     /// Apply a CX gate to the circuit.
-    fn cx(&mut self, ctrl: usize, tgt: usize);
+    fn add_cx(&mut self, ctrl: usize, tgt: usize);
 
     /// Compose two CX circuits together.
     fn mult(&self, other: &Self) -> Self {
@@ -24,7 +26,7 @@ pub trait CXCircuit: Copy + Eq + Sized + Hash + Send + Sync {
     fn from_cxs(cxs: impl IntoIterator<Item = (usize, usize)>) -> Self {
         let mut cx = Self::new();
         for (ctrl, tgt) in cxs {
-            cx.cx(ctrl, tgt);
+            cx.add_cx(ctrl, tgt);
         }
         cx
     }
@@ -48,6 +50,34 @@ impl Hash for CXCircuit16 {
     }
 }
 
+impl AStarValue for CXCircuit16 {
+    fn dist(&self, other: &Self) -> usize {
+        self.matrix
+            .iter()
+            .zip(other.matrix.iter())
+            .map(|(&a, &b)| (a != b) as usize)
+            .sum()
+    }
+
+    fn cx(&self, ctrl: u8, tgt: u8) -> Self {
+        let mut cx = self.clone();
+        cx.add_cx(ctrl as usize, tgt as usize);
+        cx
+    }
+
+    fn merge(&self, other: &Self, used_qubits: &fxhash::FxHashSet<u8>) -> Self {
+        let mut merge = self.clone();
+        for &qb in used_qubits {
+            merge.matrix[qb as usize] = other.matrix[qb as usize];
+        }
+        merge
+    }
+
+    fn is_complete(&self, qb: u8, target: &Self) -> bool {
+        self.matrix[qb as usize] == target.matrix[qb as usize]
+    }
+}
+
 fn eye<const N: usize>() -> [NonZeroU16; N] {
     let mut matrix: [NonZeroU16; N] = [NonZeroU16::new(1).unwrap(); N];
     for i in 0..N {
@@ -61,7 +91,7 @@ impl CXCircuit for CXCircuit16 {
         Self { matrix: eye() }
     }
 
-    fn cx(&mut self, ctrl: usize, tgt: usize) {
+    fn add_cx(&mut self, ctrl: usize, tgt: usize) {
         let ctrl_value = self.matrix[ctrl].get();
         let tgt_value = self.matrix[tgt].get();
         let new_tgt_value = tgt_value ^ ctrl_value;
@@ -119,9 +149,9 @@ mod tests {
     #[test]
     fn test_cx_16() {
         let mut cx = CXCircuit16::new();
-        cx.cx(0, 1);
-        cx.cx(3, 2);
-        cx.cx(2, 6);
+        cx.add_cx(0, 1);
+        cx.add_cx(3, 2);
+        cx.add_cx(2, 6);
 
         let mut res = eye();
         res[1] = sum_pow_two([0, 1]);
@@ -133,8 +163,8 @@ mod tests {
     #[test]
     fn test_cx_cx() {
         let mut cx_cx = CXCircuit16::new();
-        cx_cx.cx(0, 1);
-        cx_cx.cx(0, 1);
+        cx_cx.add_cx(0, 1);
+        cx_cx.add_cx(0, 1);
         assert_eq!(cx_cx.matrix, eye());
     }
 
